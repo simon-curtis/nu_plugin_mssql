@@ -1,0 +1,16 @@
+[package]
+name = "nu_plugin_mssql"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+nu-protocol = "0.96.1"
+async-trait = "0.1.51"
+tiberius = {version = "0.12.3", features = ["tds73", "chrono", "time", "sql-browser-async-std"]}
+nu-plugin = "0.96.1"
+anyhow = "1.0.86"
+async-std = {version= "1.12.0", features = ["attributes"]}
+futures = "0.3.30"
+
+[dev-dependencies]
+nu-plugin-test-support = "0.96.1"

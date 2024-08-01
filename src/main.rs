@@ -1,14 +1,14 @@
-use std::thread;
+use core::panic;
 
-use async_std::channel::{Receiver, Sender, TrySendError};
+use async_std::channel::{Receiver, Sender};
 use async_std::net::TcpStream;
 use async_std::stream::StreamExt;
 use async_std::task;
 use nu_plugin::{serve_plugin, JsonSerializer};
 use nu_plugin::{Plugin, PluginCommand};
 use nu_protocol::{
-    IntoInterruptiblePipelineData, LabeledError, PipelineData, Record, Signals, Signature, Span,
-    Spanned, SyntaxShape, Type, Value,
+    IntoInterruptiblePipelineData, LabeledError, PipelineData, Record, Signals,
+    Signature, Span, Spanned, SyntaxShape, Type, Value,
 };
 use tiberius::time::chrono::{DateTime, FixedOffset, NaiveDateTime};
 use tiberius::{AuthMethod, Client, ColumnData, Config, FromSql, Query, SqlBrowser};
@@ -67,9 +67,13 @@ async fn create_client(args: &Args) -> anyhow::Result<Client<TcpStream>, Labeled
         },
         None => match TcpStream::connect(config.get_addr()).await {
             Ok(tcp) => tcp,
-            Err(e) => {
+            Err(e) if args.server.is_some() => {
                 return Err(LabeledError::new("Failed to connect to server")
                     .with_label("here", args.server.as_ref().unwrap().span())
+                    .with_label(e.to_string(), Span::unknown()))
+            }
+            Err(e) => {
+                return Err(LabeledError::new("Failed to connect to server")
                     .with_label(e.to_string(), Span::unknown()))
             }
         },
@@ -109,6 +113,8 @@ fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value> {
     }
 }
 
+const DEFAULT_BUFFER_SIZE: usize = 10;
+
 struct Args {
     server: Option<Value>,
     instance: Option<Value>,
@@ -116,17 +122,19 @@ struct Args {
     user: Option<Value>,
     password: Option<Value>,
     trust_cert: Option<Span>,
+    buffer_size: usize,
 }
 
 impl Args {
-    fn from_call(call: &nu_plugin::EvaluatedCall) -> Args {
+    fn from_call(call: &nu_plugin::EvaluatedCall) -> Result<Args, LabeledError> {
         let mut args = Args {
             server: None,
             instance: None,
             database: None,
             user: None,
             password: None,
-            trust_cert: call.get_flag_span("trust_cert"),
+            buffer_size: DEFAULT_BUFFER_SIZE,
+            trust_cert: call.get_flag_span("trust-cert"),
         };
 
         for (name, value) in call.named.iter() {
@@ -136,11 +144,23 @@ impl Args {
                 "database" => args.database = value.clone(),
                 "user" => args.user = value.clone(),
                 "password" => args.password = value.clone(),
+                "buffer_size" => {
+                    args.buffer_size = match value {
+                        Some(Value::Int { val, .. }) => val.clone() as usize,
+                        Some(other) => {
+                            return Err(LabeledError::new(format!(
+                                "Invalid buffer size type {:?}",
+                                other
+                            )))
+                        }
+                        _ => 10,
+                    }
+                }
                 _ => {}
             }
         }
 
-        args
+        Ok(args)
     }
 }
 
@@ -169,7 +189,7 @@ async fn run_query(query: String, args: Args, sender: Sender<Record>) {
     let mut client = match create_client(&args).await {
         Ok(client) => client,
         Err(e) => {
-            panic!("Error: {}", e);
+            panic!("Error: {:?}", e);
         }
     };
 
@@ -256,7 +276,13 @@ impl PluginCommand for MssqlPluginQuery {
                 "The password to connect with",
                 Some('p'),
             )
-            .switch("trust_cert", "Trust the server certificate", Some('t'))
+            .named(
+                "row-buffer",
+                SyntaxShape::Int,
+                format!("The max number of rows to buffer ahead of the pipeline, default: {}", DEFAULT_BUFFER_SIZE),
+                Some('b'),
+            )
+            .switch("trust-cert", "Trust the server certificate", Some('t'))
             .input_output_type(Type::Nothing, Type::ListStream)
     }
 
@@ -268,12 +294,9 @@ impl PluginCommand for MssqlPluginQuery {
         input: PipelineData,
     ) -> Result<PipelineData, nu_protocol::LabeledError> {
         let query: Spanned<String> = call.req(0)?;
-        let args = Args::from_call(call);
-
-        let (sender, receiver) = async_std::channel::bounded(1);
-
+        let args = Args::from_call(call)?;
+        let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
         task::spawn(run_query(query.item.clone(), args, sender));
-
         let iterator: TableIterator = TableIterator::new(receiver);
         Ok(iterator.into_pipeline_data(Span::unknown(), Signals::empty()))
     }

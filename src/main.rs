@@ -7,14 +7,30 @@ use async_std::task;
 use nu_plugin::{serve_plugin, JsonSerializer};
 use nu_plugin::{Plugin, PluginCommand};
 use nu_protocol::{
-    IntoInterruptiblePipelineData, LabeledError, PipelineData, Record, Signals,
-    Signature, Span, Spanned, SyntaxShape, Type, Value,
+    IntoInterruptiblePipelineData, LabeledError, PipelineData, Record, Signals, Signature, Span,
+    Spanned, SyntaxShape, Type, Value,
 };
 use tiberius::time::chrono::{DateTime, FixedOffset, NaiveDateTime};
 use tiberius::{AuthMethod, Client, ColumnData, Config, FromSql, Query, SqlBrowser};
 
 struct MssqlPlugin;
 struct MssqlPluginQuery;
+
+fn get_auth_method(args: &Args) -> Result<AuthMethod, LabeledError> {
+    match (&args.user, &args.password) {
+        (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
+            Ok(AuthMethod::sql_server(user, password))
+        }
+        (Some(username), None) => Err(LabeledError::new("Invalid credentials")
+            .with_label("Username specified without password", username.span())),
+        (None, Some(password)) => Err(LabeledError::new("Invalid credentials")
+            .with_label("Password specified without username", password.span())),
+        #[cfg(target_os = "windows")]
+        _ => Ok(AuthMethod::Integrated),
+        #[cfg(target_os = "linux")]
+        _ => Ok(AuthMethod::None),
+    }
+}
 
 async fn create_client(args: &Args) -> anyhow::Result<Client<TcpStream>, LabeledError> {
     let mut config = Config::new();
@@ -37,20 +53,10 @@ async fn create_client(args: &Args) -> anyhow::Result<Client<TcpStream>, Labeled
         config.port(1433)
     }
 
-    match (&args.user, &args.password) {
-        (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
-            config.authentication(AuthMethod::sql_server(user, password));
-        }
-        (Some(username), None) => {
-            return Err(LabeledError::new("Invalid credentials")
-                .with_label("Username specified without password", username.span()));
-        }
-        (None, Some(password)) => {
-            return Err(LabeledError::new("Invalid credentials")
-                .with_label("Password specified without username", password.span()));
-        }
-        _ => config.authentication(AuthMethod::Integrated),
-    };
+    match get_auth_method(&args) {
+        Ok(auth_method) => config.authentication(auth_method),
+        Err(e) => return Err(e),
+    }
 
     if args.trust_cert.is_some() {
         config.trust_cert();
@@ -279,7 +285,10 @@ impl PluginCommand for MssqlPluginQuery {
             .named(
                 "row-buffer",
                 SyntaxShape::Int,
-                format!("The max number of rows to buffer ahead of the pipeline, default: {}", DEFAULT_BUFFER_SIZE),
+                format!(
+                    "The max number of rows to buffer ahead of the pipeline, default: {}",
+                    DEFAULT_BUFFER_SIZE
+                ),
                 Some('b'),
             )
             .switch("trust-cert", "Trust the server certificate", Some('t'))

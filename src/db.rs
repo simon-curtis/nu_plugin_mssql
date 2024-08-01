@@ -103,22 +103,31 @@ pub fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value, LabeledE
         ColumnData::String(Some(val)) => Ok(Value::string(val.as_ref(), Span::unknown())),
         ColumnData::I32(Some(val)) => Ok(Value::int(*val as i64, Span::unknown())),
         ColumnData::F32(Some(val)) => Ok(Value::float(*val as f64, Span::unknown())),
-        ColumnData::DateTime2(Some(_)) => match NaiveDateTime::from_sql(data) {
-            Ok(naive) => match naive {
-                Some(naive) => {
-                    let date_time = DateTime::<FixedOffset>::from_utc(naive, FixedOffset::east(0));
+        ColumnData::DateTime2(Some(_)) => parse_date(data),
+        other => Err(LabeledError::new(format!(
+            "Failed to parse value: {:?}",
+            other
+        ))),
+    }
+}
+
+fn parse_date(data: &ColumnData<'static>) -> anyhow::Result<Value, LabeledError> {
+    match NaiveDateTime::from_sql(data) {
+        Ok(naive) => match naive {
+            Some(naive) => match FixedOffset::east_opt(0) {
+                Some(offset) => {
+                    let date_time =
+                        DateTime::<FixedOffset>::from_naive_utc_and_offset(naive, offset);
                     Ok(Value::date(date_time, Span::unknown()))
                 }
                 None => Err(LabeledError::new("Failed to parse datetime")
                     .with_label("Invalid datetime", Span::unknown())),
             },
-            Err(e) => Err(LabeledError::new("Failed to parse datetime")
-                .with_label(e.to_string(), Span::unknown())),
+            None => Err(LabeledError::new("Failed to parse datetime")
+                .with_label("Invalid datetime", Span::unknown())),
         },
-        other => Err(LabeledError::new(format!(
-            "Failed to parse value: {:?}",
-            other
-        ))),
+        Err(e) => Err(LabeledError::new("Failed to parse datetime")
+            .with_label(e.to_string(), Span::unknown())),
     }
 }
 

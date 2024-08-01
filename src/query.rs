@@ -2,66 +2,16 @@ use async_std::task;
 use nu_plugin::PluginCommand;
 use nu_protocol::{
     IntoInterruptiblePipelineData, LabeledError, PipelineData, Signals, Signature, Span, Spanned,
-    SyntaxShape, Value,
+    SyntaxShape,
 };
 
 use crate::{
-    db::{run_query, TableIterator},
+    data::connection::{ConnectionSettings, DEFAULT_BUFFER_SIZE},
+    data::db::{run_query, TableIterator},
     MssqlPlugin,
 };
 
-const DEFAULT_BUFFER_SIZE: usize = 10;
-
 pub struct MssqlPluginQuery;
-
-pub struct ConnectionSettings {
-    pub server: Option<Value>,
-    pub instance: Option<Value>,
-    pub database: Option<Value>,
-    pub user: Option<Value>,
-    pub password: Option<Value>,
-    pub trust_cert: Option<Span>,
-    pub buffer_size: usize,
-}
-
-impl ConnectionSettings {
-    fn from_call(call: &nu_plugin::EvaluatedCall) -> Result<ConnectionSettings, LabeledError> {
-        let mut args = ConnectionSettings {
-            server: None,
-            instance: None,
-            database: None,
-            user: None,
-            password: None,
-            buffer_size: DEFAULT_BUFFER_SIZE,
-            trust_cert: call.get_flag_span("trust-cert"),
-        };
-
-        for (name, value) in call.named.iter() {
-            match name.item.as_str() {
-                "server" => args.server = value.clone(),
-                "instance" => args.instance = value.clone(),
-                "database" => args.database = value.clone(),
-                "user" => args.user = value.clone(),
-                "password" => args.password = value.clone(),
-                "buffer_size" => {
-                    args.buffer_size = match value {
-                        Some(Value::Int { val, .. }) => val.clone() as usize,
-                        Some(other) => {
-                            return Err(LabeledError::new(format!(
-                                "Invalid buffer size type {:?}",
-                                other
-                            )))
-                        }
-                        _ => 10,
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(args)
-    }
-}
 
 impl PluginCommand for MssqlPluginQuery {
     type Plugin = MssqlPlugin;
@@ -76,7 +26,12 @@ impl PluginCommand for MssqlPluginQuery {
 
     fn signature(&self) -> Signature {
         Signature::build(PluginCommand::name(self))
-            .required("query", SyntaxShape::String, "The query to run")
+            .named(
+                "query",
+                SyntaxShape::String,
+                "The query to run against the database",
+                Some('q'),
+            )
             .named(
                 "server",
                 SyntaxShape::String,
@@ -125,15 +80,25 @@ impl PluginCommand for MssqlPluginQuery {
         _plugin: &Self::Plugin,
         _engine: &nu_plugin::EngineInterface,
         call: &nu_plugin::EvaluatedCall,
-        input: PipelineData,
+        _input: PipelineData,
     ) -> Result<PipelineData, nu_protocol::LabeledError> {
         let query: Spanned<String> = call.req(0)?;
         let args = ConnectionSettings::from_call(call)?;
-        let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
-        task::spawn(run_query(query.item.clone(), args, sender));
 
-        let iterator = TableIterator::new(receiver);
-        Ok(iterator.into_pipeline_data(Span::unknown(), Signals::empty()))
+        for (name, _) in call.named.iter() {
+            match name.item.as_str() {
+                "query" => {
+                    let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
+                    task::spawn(run_query(query.item.clone(), args, sender));
+
+                    let iterator = TableIterator::new(receiver);
+                    return Ok(iterator.into_pipeline_data(Span::unknown(), Signals::empty()));
+                }
+                _ => {}
+            }
+        }
+
+        Err(LabeledError::new("No command specified"))
     }
 }
 

@@ -1,5 +1,3 @@
-use std::any::Any;
-
 use async_std::{
     channel::{Receiver, Sender},
     net::TcpStream,
@@ -11,7 +9,7 @@ use tiberius::{
     AuthMethod, Client, ColumnData, Config, FromSql, Query, SqlBrowser,
 };
 
-use crate::query::ConnectionSettings;
+use crate::data::connection::ConnectionSettings;
 
 pub fn get_auth_method(args: &ConnectionSettings) -> Result<AuthMethod, LabeledError> {
     match (&args.user, &args.password) {

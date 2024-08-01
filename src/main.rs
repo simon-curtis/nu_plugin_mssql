@@ -2,7 +2,7 @@ use nu_plugin::{serve_plugin, JsonSerializer};
 use nu_plugin::{Plugin, PluginCommand};
 use query::MssqlPluginQuery;
 
-mod db;
+mod data;
 mod query;
 
 pub struct MssqlPlugin;

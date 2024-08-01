@@ -1,4 +1,5 @@
-use crate::Args;
+use std::any::Any;
+
 use async_std::{
     channel::{Receiver, Sender},
     net::TcpStream,
@@ -10,7 +11,9 @@ use tiberius::{
     AuthMethod, Client, ColumnData, Config, FromSql, Query, SqlBrowser,
 };
 
-pub fn get_auth_method(args: &Args) -> Result<AuthMethod, LabeledError> {
+use crate::query::ConnectionSettings;
+
+pub fn get_auth_method(args: &ConnectionSettings) -> Result<AuthMethod, LabeledError> {
     match (&args.user, &args.password) {
         (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
             Ok(AuthMethod::sql_server(user, password))
@@ -26,7 +29,9 @@ pub fn get_auth_method(args: &Args) -> Result<AuthMethod, LabeledError> {
     }
 }
 
-pub async fn create_client(args: &Args) -> anyhow::Result<Client<TcpStream>, LabeledError> {
+pub async fn create_client(
+    args: &ConnectionSettings,
+) -> anyhow::Result<Client<TcpStream>, LabeledError> {
     let mut config = Config::new();
 
     if let Some(server) = &args.server {
@@ -92,18 +97,28 @@ pub async fn create_client(args: &Args) -> anyhow::Result<Client<TcpStream>, Lab
     }
 }
 
-pub fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value> {
+pub fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value, LabeledError> {
     match data {
         ColumnData::Binary(Some(val)) => Ok(Value::binary(val.as_ref(), Span::unknown())),
         ColumnData::String(Some(val)) => Ok(Value::string(val.as_ref(), Span::unknown())),
         ColumnData::I32(Some(val)) => Ok(Value::int(*val as i64, Span::unknown())),
         ColumnData::F32(Some(val)) => Ok(Value::float(*val as f64, Span::unknown())),
-        ColumnData::DateTime2(Some(_)) => {
-            let naive = NaiveDateTime::from_sql(data)?.expect("failed to parse datetime");
-            let date_time = DateTime::<FixedOffset>::from_utc(naive, FixedOffset::east(0));
-            Ok(Value::date(date_time, Span::unknown()))
-        }
-        _ => Ok(Value::nothing(Span::unknown())),
+        ColumnData::DateTime2(Some(_)) => match NaiveDateTime::from_sql(data) {
+            Ok(naive) => match naive {
+                Some(naive) => {
+                    let date_time = DateTime::<FixedOffset>::from_utc(naive, FixedOffset::east(0));
+                    Ok(Value::date(date_time, Span::unknown()))
+                }
+                None => Err(LabeledError::new("Failed to parse datetime")
+                    .with_label("Invalid datetime", Span::unknown())),
+            },
+            Err(e) => Err(LabeledError::new("Failed to parse datetime")
+                .with_label(e.to_string(), Span::unknown())),
+        },
+        other => Err(LabeledError::new(format!(
+            "Failed to parse value: {:?}",
+            other
+        ))),
     }
 }
 
@@ -128,7 +143,7 @@ impl Iterator for TableIterator {
     }
 }
 
-pub async fn run_query(query: String, args: Args, sender: Sender<Record>) {
+pub async fn run_query(query: String, args: ConnectionSettings, sender: Sender<Record>) {
     let mut client = match create_client(&args).await {
         Ok(client) => client,
         Err(e) => {

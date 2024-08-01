@@ -1599,7 +1599,9 @@ dependencies = [
  "nu-plugin",
  "nu-plugin-test-support",
  "nu-protocol",
+ "serde",
  "tiberius",
+ "typetag",
 ]
 
 [[package]]

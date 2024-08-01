@@ -1,8 +1,7 @@
 use async_std::task;
 use nu_plugin::PluginCommand;
 use nu_protocol::{
-    IntoInterruptiblePipelineData, LabeledError, PipelineData, Signals, Signature, Span, Spanned,
-    SyntaxShape,
+    IntoInterruptiblePipelineData, PipelineData, Signals, Signature, Span, Spanned, SyntaxShape,
 };
 
 use crate::{
@@ -17,20 +16,19 @@ impl PluginCommand for MssqlPluginQuery {
     type Plugin = MssqlPlugin;
 
     fn name(&self) -> &str {
-        "mssql"
+        "mssql query"
     }
 
     fn usage(&self) -> &str {
-        "A plugin for connecting to a MSSQL database"
+        "Run a query against a MSSQL database"
     }
 
     fn signature(&self) -> Signature {
         Signature::build(PluginCommand::name(self))
-            .named(
+            .required(
                 "query",
                 SyntaxShape::String,
                 "The query to run against the database",
-                Some('q'),
             )
             .named(
                 "server",
@@ -85,20 +83,11 @@ impl PluginCommand for MssqlPluginQuery {
         let query: Spanned<String> = call.req(0)?;
         let args = ConnectionSettings::from_call(call)?;
 
-        for (name, _) in call.named.iter() {
-            match name.item.as_str() {
-                "query" => {
-                    let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
-                    task::spawn(run_query(query.item.clone(), args, sender));
+        let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
+        task::spawn(run_query(query.item.clone(), args, sender));
 
-                    let iterator = TableIterator::new(receiver);
-                    return Ok(iterator.into_pipeline_data(Span::unknown(), Signals::empty()));
-                }
-                _ => {}
-            }
-        }
-
-        Err(LabeledError::new("No command specified"))
+        let iterator = TableIterator::new(receiver);
+        Ok(iterator.into_pipeline_data(Span::unknown(), Signals::empty()))
     }
 }
 

@@ -1,99 +1,14 @@
 use async_std::{
     channel::{Receiver, Sender},
-    net::TcpStream,
     stream::StreamExt,
 };
 use nu_protocol::{LabeledError, Record, Span, Value};
 use tiberius::{
     time::chrono::{DateTime, FixedOffset, NaiveDateTime},
-    AuthMethod, Client, ColumnData, Config, FromSql, Query, SqlBrowser,
+    ColumnData, FromSql, Query,
 };
 
 use crate::data::connection::ConnectionSettings;
-
-pub fn get_auth_method(args: &ConnectionSettings) -> Result<AuthMethod, LabeledError> {
-    match (&args.user, &args.password) {
-        (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
-            Ok(AuthMethod::sql_server(user, password))
-        }
-        (Some(username), None) => Err(LabeledError::new("Invalid credentials")
-            .with_label("Username specified without password", username.span())),
-        (None, Some(password)) => Err(LabeledError::new("Invalid credentials")
-            .with_label("Password specified without username", password.span())),
-        #[cfg(target_os = "windows")]
-        _ => Ok(AuthMethod::Integrated),
-        #[cfg(target_os = "linux")]
-        _ => Ok(AuthMethod::None),
-    }
-}
-
-pub async fn create_client(
-    args: &ConnectionSettings,
-) -> anyhow::Result<Client<TcpStream>, LabeledError> {
-    let mut config = Config::new();
-
-    if let Some(server) = &args.server {
-        config.host(server.as_str().unwrap());
-    } else {
-        config.host("localhost");
-    }
-
-    if let Some(database) = &args.database {
-        config.database(database.as_str().unwrap());
-    } else {
-        config.database("master");
-    }
-
-    if let Some(instance) = &args.instance {
-        config.instance_name(instance.as_str().unwrap());
-    } else {
-        config.port(1433)
-    }
-
-    match get_auth_method(&args) {
-        Ok(auth_method) => config.authentication(auth_method),
-        Err(e) => return Err(e),
-    }
-
-    if args.trust_cert.is_some() {
-        config.trust_cert();
-    }
-
-    let tcp = match args.instance {
-        Some(_) => match TcpStream::connect_named(&config).await {
-            Ok(tcp) => tcp,
-            Err(e) => {
-                return Err(LabeledError::new("Failed to connect to instance")
-                    .with_label("here", args.instance.as_ref().unwrap().span())
-                    .with_label(e.to_string(), Span::unknown()))
-            }
-        },
-        None => match TcpStream::connect(config.get_addr()).await {
-            Ok(tcp) => tcp,
-            Err(e) if args.server.is_some() => {
-                return Err(LabeledError::new("Failed to connect to server")
-                    .with_label("here", args.server.as_ref().unwrap().span())
-                    .with_label(e.to_string(), Span::unknown()))
-            }
-            Err(e) => {
-                return Err(LabeledError::new("Failed to connect to server")
-                    .with_label(e.to_string(), Span::unknown()))
-            }
-        },
-    };
-
-    tcp.set_nodelay(true).unwrap();
-    match Client::connect(config, tcp).await {
-        Ok(client) => Ok(client),
-        Err(e) => match &args.server {
-            Some(server) => Err(LabeledError::new("Failed to connect to server")
-                .with_label("here", server.span())
-                .with_label(e.to_string(), Span::unknown())),
-            None => Err(LabeledError::new("Failed to connect to instance")
-                .with_label(e.to_string(), Span::unknown())),
-        },
-    }
-}
 
 pub fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value, LabeledError> {
     match data {
@@ -150,8 +65,8 @@ impl Iterator for TableIterator {
     }
 }
 
-pub async fn run_query(query: String, args: ConnectionSettings, sender: Sender<Record>) {
-    let mut client = match create_client(&args).await {
+pub async fn run_query(query: String, settings: ConnectionSettings, sender: Sender<Record>) {
+    let mut client = match settings.create_client(&settings).await {
         Ok(client) => client,
         Err(e) => {
             panic!("Error: {:?}", e);

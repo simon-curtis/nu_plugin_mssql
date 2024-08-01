@@ -1,8 +1,11 @@
+use connection::MssqlConnection;
 use nu_plugin::{serve_plugin, JsonSerializer};
 use nu_plugin::{Plugin, PluginCommand};
 use query::MssqlPluginQuery;
 
+mod connection;
 mod data;
+mod models;
 mod query;
 
 pub struct MssqlPlugin;
@@ -13,7 +16,7 @@ impl Plugin for MssqlPlugin {
     }
 
     fn commands(&self) -> Vec<Box<dyn PluginCommand<Plugin = Self>>> {
-        vec![Box::new(MssqlPluginQuery)]
+        vec![Box::new(MssqlConnection), Box::new(MssqlPluginQuery)]
     }
 }
 

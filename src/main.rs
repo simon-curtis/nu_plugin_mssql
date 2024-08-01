@@ -88,9 +88,13 @@ async fn create_client(args: &Args) -> anyhow::Result<Client<TcpStream>, Labeled
     tcp.set_nodelay(true).unwrap();
     match Client::connect(config, tcp).await {
         Ok(client) => Ok(client),
-        Err(e) => Err(LabeledError::new("Failed to connect to server")
-            .with_label("here", args.server.as_ref().unwrap().span())
-            .with_label(e.to_string(), Span::unknown())),
+        Err(e) => match &args.server {
+            Some(server) => Err(LabeledError::new("Failed to connect to server")
+                .with_label("here", server.span())
+                .with_label(e.to_string(), Span::unknown())),
+            None => Err(LabeledError::new("Failed to connect to instance")
+                .with_label(e.to_string(), Span::unknown())),
+        },
     }
 }
 

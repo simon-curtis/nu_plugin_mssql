@@ -3,7 +3,7 @@ use nu_protocol::{LabeledError, Span, Value};
 use serde::{Deserialize, Serialize};
 use tiberius::{AuthMethod, Client, Config, SqlBrowser};
 
-pub const DEFAULT_BUFFER_SIZE: usize = 10;
+use crate::DEFAULT_BUFFER_SIZE;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionSettings {

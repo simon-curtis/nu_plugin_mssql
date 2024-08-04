@@ -1,25 +1,6 @@
-use connection::MssqlConnection;
-use nu_plugin::{serve_plugin, JsonSerializer};
-use nu_plugin::{Plugin, PluginCommand};
-use query::MssqlPluginQuery;
-
-mod connection;
-mod data;
-mod models;
-mod query;
-
-pub struct MssqlPlugin;
-
-impl Plugin for MssqlPlugin {
-    fn version(&self) -> String {
-        "0.0.1".to_string()
-    }
-
-    fn commands(&self) -> Vec<Box<dyn PluginCommand<Plugin = Self>>> {
-        vec![Box::new(MssqlConnection), Box::new(MssqlPluginQuery)]
-    }
-}
+use nu_plugin::{serve_plugin, MsgPackSerializer};
+use nu_plugin_mssql::MssqlPlugin;
 
 fn main() {
-    serve_plugin(&MssqlPlugin, JsonSerializer)
+    serve_plugin(&MssqlPlugin, MsgPackSerializer)
 }

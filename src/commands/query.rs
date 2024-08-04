@@ -1,3 +1,4 @@
+use crate::data::connection::ConnectionSettings;
 use async_std::task;
 use nu_plugin::PluginCommand;
 use nu_protocol::{
@@ -5,14 +6,13 @@ use nu_protocol::{
 };
 
 use crate::{
-    data::connection::{ConnectionSettings, DEFAULT_BUFFER_SIZE},
     data::db::{run_query, TableIterator},
-    MssqlPlugin,
+    MssqlPlugin, DEFAULT_BUFFER_SIZE,
 };
 
-pub struct MssqlPluginQuery;
+pub struct Query;
 
-impl PluginCommand for MssqlPluginQuery {
+impl PluginCommand for Query {
     type Plugin = MssqlPlugin;
 
     fn name(&self) -> &str {

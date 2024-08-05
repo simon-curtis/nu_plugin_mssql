@@ -13,9 +13,14 @@ use crate::data::connection::ConnectionSettings;
 pub fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value, LabeledError> {
     match data {
         ColumnData::Binary(Some(val)) => Ok(Value::binary(val.as_ref(), Span::unknown())),
+        ColumnData::Bit(Some(val)) => Ok(Value::bool(*val, Span::unknown())),
         ColumnData::String(Some(val)) => Ok(Value::string(val.as_ref(), Span::unknown())),
+        ColumnData::String(None) => Ok(Value::nothing(Span::unknown())),
+        ColumnData::U8(Some(val)) => Ok(Value::int(*val as i64, Span::unknown())),
         ColumnData::I32(Some(val)) => Ok(Value::int(*val as i64, Span::unknown())),
+        ColumnData::I64(Some(val)) => Ok(Value::int(*val as i64, Span::unknown())),
         ColumnData::F32(Some(val)) => Ok(Value::float(*val as f64, Span::unknown())),
+        ColumnData::DateTime(Some(_)) => parse_date(data),
         ColumnData::DateTime2(Some(_)) => parse_date(data),
         other => Err(LabeledError::new(format!(
             "Failed to parse value: {:?}",

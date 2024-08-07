@@ -1,15 +1,11 @@
-use async_std::{
-    channel::{Receiver, Sender},
-    net::TcpStream,
-    stream::StreamExt,
-};
-use nu_protocol::{LabeledError, Record, Span, Spanned, Value};
+use async_std::channel::Receiver;
+use nu_protocol::{LabeledError, Span, Value};
 use tiberius::{
     time::{
         chrono::{DateTime, FixedOffset, NaiveDateTime},
         Time,
     },
-    Client, ColumnData, FromSql, Query,
+    ColumnData, FromSql,
 };
 
 pub fn parse_value(data: &ColumnData<'static>) -> anyhow::Result<Value, LabeledError> {
@@ -105,50 +101,6 @@ impl Iterator for TableIterator {
         match self.receiver.recv_blocking() {
             Ok(value) => Some(value),
             Err(_) => None,
-        }
-    }
-}
-
-pub async fn run_query<'a>(
-    query: Spanned<String>,
-    client: &mut Client<TcpStream>,
-    sender: Sender<Value>,
-) {
-    let select = Query::new(query.item);
-    let stream = match select.query(client).await {
-        Ok(stream) => stream,
-        Err(e) => {
-            panic!("Error: {}", e);
-        }
-    };
-
-    let mut row_stream = stream.into_row_stream();
-    while let Some(row) = row_stream.next().await {
-        match row {
-            Ok(row) => {
-                let mut record = Record::new();
-
-                for (col, cell) in row.cells() {
-                    match parse_value(cell) {
-                        Ok(value) => {
-                            record.insert(col.name(), value);
-                        }
-                        Err(e) => {
-                            panic!("Error: {:?}", e);
-                        }
-                    }
-                }
-
-                if let Err(e) = sender.send(Value::record(record, Span::unknown())).await {
-                    if sender.is_closed() {
-                        return;
-                    }
-                    panic!("Error: {:?}", e);
-                }
-            }
-            Err(e) => {
-                panic!("Error: {}", e);
-            }
         }
     }
 }

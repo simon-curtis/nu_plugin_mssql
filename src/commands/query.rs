@@ -1,18 +1,16 @@
-use crate::data::{
-    connection::{create_client, ConnectionError},
-    query_args::{QueryArgs, QuerySource},
-};
+use crate::data::{create_client, ConnectionArgs, MssqlClient, QuerySource};
 use async_std::task;
 use nu_plugin::PluginCommand;
 use nu_protocol::{
-    IntoInterruptiblePipelineData, IntoSpanned, LabeledError, PipelineData, ShellError, Signals,
-    Signature, Span, Spanned, SyntaxShape, Value,
+    IntoInterruptiblePipelineData, IntoSpanned, LabeledError, PipelineData, ShellError, Signals, Signature, Spanned, SyntaxShape, Type, Value
 };
 
 use crate::{
-    data::db::{run_query, TableIterator},
+    data::TableIterator,
     MssqlPlugin, DEFAULT_BUFFER_SIZE,
 };
+
+use super::handle_err;
 
 pub struct Query;
 
@@ -80,6 +78,10 @@ impl PluginCommand for Query {
                 ),
                 Some('b'),
             )
+            .input_output_type(
+                Type::Custom("MssqlClient".into()),
+                Type::table(),
+            )
             .switch("trust-cert", "Trust the server certificate", Some('t'))
             .category(nu_protocol::Category::Database)
     }
@@ -89,18 +91,32 @@ impl PluginCommand for Query {
         _plugin: &Self::Plugin,
         _engine: &nu_plugin::EngineInterface,
         call: &nu_plugin::EvaluatedCall,
-        _input: PipelineData,
+        input: PipelineData,
     ) -> Result<PipelineData, nu_protocol::LabeledError> {
-        let args = QueryArgs::from_call(call)?;
+        let args = ConnectionArgs::from_call(call)?;
+        let query = QuerySource::from_call(call)?;
         let call_head = call.head;
-        let query = get_query(&args)?;
+        let query = get_query(&query)?;
 
         let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
         task::spawn(async move {
-            match create_client(&args).await {
-                Ok(mut client) => run_query(query, &mut client, sender).await,
-                Err(e) => handle_err(e, &args, call_head, sender).await,
-            }
+            let client = match try_get_client(input) {
+                Some(client) => client,
+                _ => match create_client(&args).await {
+                    Ok(client) => {
+                        MssqlClient::new(args.clone(), client)
+                    },
+                    Err(e) => {
+                        let err=  handle_err(e, &args);
+                        let err = ShellError::LabeledError(Box::new(err));
+                        let value = Value::error(err, call_head);
+                        _ = sender.send(value).await;
+                        return;
+                    }
+                }
+            };
+
+            client.run_query(query, sender).await;
         });
 
         let iterator = TableIterator::new(receiver);
@@ -108,77 +124,36 @@ impl PluginCommand for Query {
     }
 }
 
-fn get_query(args: &QueryArgs) -> Result<Spanned<String>, LabeledError> {
-    match args.source.as_ref() {
-        Some(QuerySource::Query(query, span)) => Ok(query.clone().into_spanned(span.clone())),
-        Some(QuerySource::File(file, span)) => match std::fs::read_to_string(file) {
+fn try_get_client(input: PipelineData) -> Option<MssqlClient> {
+    match input {
+        PipelineData::Value(value, _) => match value {
+            Value::Custom { val , ..} => match val.as_any().downcast_ref::<MssqlClient>() {
+                Some(client) => Some(client.clone()),
+                None => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    } 
+}
+
+fn get_query(query: &QuerySource) -> Result<Spanned<String>, LabeledError> {
+    match query {
+        QuerySource::Query(query, span) => Ok(query.clone().into_spanned(span.clone())),
+        QuerySource::File(file, span) => match std::fs::read_to_string(file) {
             Ok(query) => Ok(query.into_spanned(span.clone())),
             Err(e) => Err(LabeledError::new(format!(
                 "Error reading file {}: {}",
                 file, e
             ))),
-        },
-        None => Err(LabeledError::new("No query specified")),
+        }
     }
-}
-
-async fn handle_err(
-    error: ConnectionError,
-    args: &QueryArgs,
-    call_head: Span,
-    sender: async_std::channel::Sender<Value>,
-) {
-    let value = match error {
-        ConnectionError::LoginFailed(auth_method) => {
-            let error = match auth_method {
-                #[cfg(target_os = "windows")]
-                tiberius::AuthMethod::Integrated => {
-                    LabeledError::new("Login failed for integrated auth")
-                }
-                #[cfg(target_os = "windows")]
-                tiberius::AuthMethod::Windows(_) => LabeledError::new("Windows auth not supported yet"),
-                tiberius::AuthMethod::None => LabeledError::new("Login failed for none auth"),
-                tiberius::AuthMethod::SqlServer(_) => LabeledError::new(format!(
-                    "Login failed for user {:?}, password: <HIDDEN>",
-                    args.user.as_ref().unwrap().as_str(),
-                )),
-                tiberius::AuthMethod::AADToken(_) => LabeledError::new("AADToken auth not supported"),
-                #[cfg(target_os = "linux")]
-                _ => todo!(),
-            };
-            let error = ShellError::LabeledError(Box::new(error));
-            Value::error(error, call_head)
-        }
-        ConnectionError::UserWithoutPassword(span) => {
-            let error = LabeledError::new("Invalid credentials")
-                .with_label("User specified without password", span);
-            let error = ShellError::LabeledError(Box::new(error));
-            Value::error(error, call_head)
-        }
-        ConnectionError::SetupError(error) => {
-            let error = LabeledError::new(format!(
-                "Error while setting up connection: {}",
-                error.to_string()
-            ));
-            let error = ShellError::LabeledError(Box::new(error));
-            Value::error(error, call_head)
-        }
-        ConnectionError::ConnectionError(error) => {
-            let error = LabeledError::new(format!(
-                "Error while connecting to database: {}",
-                error.to_string()
-            ));
-            let error = ShellError::LabeledError(Box::new(error));
-            Value::error(error, call_head)
-        }
-    };
-
-    let _ = sender.send(value).await;
 }
 
 #[test]
 fn test_basic_connection() -> Result<(), nu_protocol::ShellError> {
     use nu_plugin_test_support::PluginTest;
+    use nu_protocol::Span;
     let mut plugin_test = PluginTest::new("mssql", MssqlPlugin.into())?;
 
     // Now lets add a positional argument

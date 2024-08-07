@@ -1,7 +1,7 @@
 mod commands;
 mod data;
 
-use commands::Mssql;
+use commands::{Connect, Mssql};
 use nu_plugin::{Plugin, PluginCommand};
 
 pub use commands::Query;
@@ -18,6 +18,6 @@ impl Plugin for MssqlPlugin {
     }
 
     fn commands(&self) -> Vec<Box<dyn PluginCommand<Plugin = Self>>> {
-        vec![Box::new(Mssql), Box::new(Query)]
+        vec![Box::new(Mssql), Box::new(Connect), Box::new(Query)]
     }
 }

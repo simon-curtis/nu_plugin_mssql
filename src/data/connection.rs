@@ -2,7 +2,8 @@ use async_std::net::TcpStream;
 use nu_protocol::{Span, Value};
 use tiberius::{error::Error, AuthMethod, Client, Config, SqlBrowser};
 
-use super::query_args::QueryArgs;
+use super::ConnectionArgs;
+
 
 #[derive(Debug)]
 pub enum ConnectionError {
@@ -12,7 +13,7 @@ pub enum ConnectionError {
     ConnectionError(tiberius::error::Error),
 }
 
-pub async fn create_client(args: &QueryArgs) -> anyhow::Result<Client<TcpStream>, ConnectionError> {
+pub async fn create_client(args: &ConnectionArgs) -> anyhow::Result<Client<TcpStream>, ConnectionError> {
     let config = config_from_args(args)?;
     let stream = match create_stream(args, &config).await {
         Ok(stream) => stream,
@@ -30,7 +31,7 @@ pub async fn create_client(args: &QueryArgs) -> anyhow::Result<Client<TcpStream>
 }
 
 pub async fn create_stream(
-    args: &QueryArgs,
+    args: &ConnectionArgs,
     config: &Config,
 ) -> anyhow::Result<TcpStream, tiberius::error::Error> {
     let tcp = match &args.instance {
@@ -42,7 +43,7 @@ pub async fn create_stream(
     Ok(tcp)
 }
 
-fn config_from_args(args: &QueryArgs) -> anyhow::Result<Config, ConnectionError> {
+fn config_from_args(args: &ConnectionArgs) -> anyhow::Result<Config, ConnectionError> {
     let mut config = Config::new();
 
     if let Some(server) = &args.server {
@@ -75,7 +76,7 @@ fn config_from_args(args: &QueryArgs) -> anyhow::Result<Config, ConnectionError>
     Ok(config)
 }
 
-fn get_auth_method(args: &QueryArgs) -> anyhow::Result<AuthMethod, ConnectionError> {
+fn get_auth_method(args: &ConnectionArgs) -> anyhow::Result<AuthMethod, ConnectionError> {
     match (&args.user, &args.password) {
         (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
             Ok(AuthMethod::sql_server(user, password))

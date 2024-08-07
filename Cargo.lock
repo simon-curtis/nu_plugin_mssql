@@ -2484,6 +2484,7 @@ dependencies = [
  "once_cell",
  "pin-project-lite",
  "pretty-hex",
+ "rust_decimal",
  "thiserror",
  "time",
  "tracing",

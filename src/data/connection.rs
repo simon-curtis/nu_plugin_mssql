@@ -1,156 +1,92 @@
 use async_std::net::TcpStream;
-use nu_protocol::{LabeledError, Span, Value};
-use serde::{Deserialize, Serialize};
-use tiberius::{AuthMethod, Client, Config, SqlBrowser};
+use nu_protocol::{Span, Value};
+use tiberius::{error::Error, AuthMethod, Client, Config, SqlBrowser};
 
-use crate::DEFAULT_BUFFER_SIZE;
+use super::query_args::QueryArgs;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConnectionSettings {
-    pub server: Option<Value>,
-    pub instance: Option<Value>,
-    pub database: Option<Value>,
-    pub user: Option<Value>,
-    pub password: Option<Value>,
-    pub trust_cert: Option<Span>,
-    pub buffer_size: usize,
+#[derive(Debug)]
+pub enum ConnectionError {
+    UserWithoutPassword(Span),
+    LoginFailed(AuthMethod),
+    SetupError(tiberius::error::Error),
+    ConnectionError(tiberius::error::Error),
 }
 
-impl ConnectionSettings {
-    pub fn to_config(&self) -> anyhow::Result<Config, LabeledError> {
-        let mut config = Config::new();
+pub async fn create_client(args: &QueryArgs) -> anyhow::Result<Client<TcpStream>, ConnectionError> {
+    let config = config_from_args(args)?;
+    let stream = match create_stream(args, &config).await {
+        Ok(stream) => stream,
+        Err(e) => return Err(ConnectionError::SetupError(e)),
+    };
 
-        if let Some(server) = &self.server {
-            config.host(server.as_str().unwrap());
-        } else {
-            config.host("localhost");
+    match Client::connect(config, stream).await {
+        Ok(client) => Ok(client),
+        Err(Error::Server(e)) if e.code() == 18456 => {
+            let auth = get_auth_method(&args).unwrap();
+            Err(ConnectionError::LoginFailed(auth))
         }
+        Err(e) => Err(ConnectionError::ConnectionError(e)),
+    }
+}
 
-        if let Some(database) = &self.database {
-            config.database(database.as_str().unwrap());
-        } else {
-            config.database("master");
-        }
+pub async fn create_stream(
+    args: &QueryArgs,
+    config: &Config,
+) -> anyhow::Result<TcpStream, tiberius::error::Error> {
+    let tcp = match &args.instance {
+        Some(_) => TcpStream::connect_named(config).await?,
+        None => TcpStream::connect(config.get_addr()).await?,
+    };
 
-        if let Some(instance) = &self.instance {
-            config.instance_name(instance.as_str().unwrap());
-        } else {
-            config.port(1433)
-        }
+    tcp.set_nodelay(true)?;
+    Ok(tcp)
+}
 
-        match self.get_auth_method() {
-            Ok(auth_method) => config.authentication(auth_method),
-            Err(e) => return Err(e),
-        }
+fn config_from_args(args: &QueryArgs) -> anyhow::Result<Config, ConnectionError> {
+    let mut config = Config::new();
 
-        if self.trust_cert.is_some() {
-            config.trust_cert();
-        }
-
-        Ok(config)
+    if let Some(server) = &args.server {
+        config.host(server.as_str().unwrap());
+    } else {
+        config.host("localhost");
     }
 
-    pub async fn create_client(
-        &self,
-        args: &ConnectionSettings,
-    ) -> anyhow::Result<Client<TcpStream>, LabeledError> {
-        let config = args.to_config()?;
-
-        let tcp = match self.create_stream(&config).await {
-            Ok(tcp) => tcp,
-            Err(e) => return Err(e),
-        };
-
-        match Client::connect(config, tcp).await {
-            Ok(client) => Ok(client),
-            Err(e) => match &args.server {
-                Some(server) => Err(LabeledError::new("Failed to connect to server")
-                    .with_label("here", server.span())
-                    .with_label(e.to_string(), Span::unknown())),
-                None => Err(LabeledError::new("Failed to connect to instance")
-                    .with_label(e.to_string(), Span::unknown())),
-            },
-        }
+    if let Some(database) = &args.database {
+        config.database(database.as_str().unwrap());
+    } else {
+        config.database("master");
     }
 
-    pub fn from_call(call: &nu_plugin::EvaluatedCall) -> Result<ConnectionSettings, LabeledError> {
-        let mut args = ConnectionSettings {
-            server: None,
-            instance: None,
-            database: None,
-            user: None,
-            password: None,
-            buffer_size: DEFAULT_BUFFER_SIZE,
-            trust_cert: call.get_flag_span("trust-cert"),
-        };
-
-        for (name, value) in call.named.iter() {
-            match name.item.as_str() {
-                "server" => args.server = value.clone(),
-                "instance" => args.instance = value.clone(),
-                "database" => args.database = value.clone(),
-                "user" => args.user = value.clone(),
-                "password" => args.password = value.clone(),
-                "buffer_size" => {
-                    args.buffer_size = match value {
-                        Some(Value::Int { val, .. }) => val.clone() as usize,
-                        Some(other) => {
-                            return Err(LabeledError::new(format!(
-                                "Invalid buffer size type {:?}",
-                                other
-                            )))
-                        }
-                        _ => 10,
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        Ok(args)
+    if let Some(instance) = &args.instance {
+        config.instance_name(instance.as_str().unwrap());
+    } else {
+        config.port(1433)
     }
 
-    pub async fn create_stream(&self, config: &Config) -> anyhow::Result<TcpStream, LabeledError> {
-        let tcp = match &self.instance {
-            Some(instance) => match TcpStream::connect_named(config).await {
-                Ok(tcp) => tcp,
-                Err(e) => {
-                    return Err(LabeledError::new("Failed to connect to instance")
-                        .with_label("here", instance.span())
-                        .with_label(e.to_string(), Span::unknown()))
-                }
-            },
-            None => match TcpStream::connect(config.get_addr()).await {
-                Ok(tcp) => tcp,
-                Err(e) => {
-                    return match &self.server {
-                        Some(server) => Err(LabeledError::new("Failed to connect to server")
-                            .with_label("here", server.span())
-                            .with_label(e.to_string(), Span::unknown())),
-                        None => Err(LabeledError::new("Failed to connect to server")
-                            .with_label(e.to_string(), Span::unknown())),
-                    }
-                }
-            },
-        };
-
-        tcp.set_nodelay(true).unwrap();
-        Ok(tcp)
+    match get_auth_method(args) {
+        Ok(auth_method) => config.authentication(auth_method),
+        Err(e) => return Err(e),
     }
 
-    fn get_auth_method(&self) -> Result<AuthMethod, LabeledError> {
-        match (&self.user, &self.password) {
-            (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
-                Ok(AuthMethod::sql_server(user, password))
-            }
-            (Some(username), None) => Err(LabeledError::new("Invalid credentials")
-                .with_label("Username specified without password", username.span())),
-            (None, Some(password)) => Err(LabeledError::new("Invalid credentials")
-                .with_label("Password specified without username", password.span())),
-            #[cfg(target_os = "windows")]
-            _ => Ok(AuthMethod::Integrated),
-            #[cfg(target_os = "linux")]
-            _ => Ok(AuthMethod::None),
+    if args.trust_cert.is_some() {
+        config.trust_cert();
+    }
+
+    Ok(config)
+}
+
+fn get_auth_method(args: &QueryArgs) -> anyhow::Result<AuthMethod, ConnectionError> {
+    match (&args.user, &args.password) {
+        (Some(Value::String { val: user, .. }), Some(Value::String { val: password, .. })) => {
+            Ok(AuthMethod::sql_server(user, password))
         }
+        (_, Some(Value::String { val: password, .. })) => {
+            Ok(AuthMethod::sql_server("sa", password))
+        }
+        (Some(password), None) => Err(ConnectionError::UserWithoutPassword(password.span())),
+        #[cfg(target_os = "windows")]
+        _ => Ok(AuthMethod::Integrated),
+        #[cfg(target_os = "linux")]
+        _ => Ok(AuthMethod::None),
     }
 }

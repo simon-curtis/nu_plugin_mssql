@@ -11,6 +11,7 @@ tiberius = { version = "0.12.3", features = [
     "chrono",
     "time",
     "sql-browser-async-std",
+    "rust_decimal",
 ] }
 nu-plugin = "0.96.1"
 anyhow = "1.0.86"

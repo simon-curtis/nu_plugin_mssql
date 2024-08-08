@@ -8,8 +8,10 @@ else
     # Further checks can be added for other platforms if needed
     ifeq ($(UNAME), Linux)
         # Linux-specific settings (if any)
+        PLUGIN_NAME := nu_plugin_mssql
     else ifeq ($(UNAME), Darwin)
         # macOS-specific settings (if any)
+        PLUGIN_NAME := nu_plugin_mssql
     endif
 endif
 

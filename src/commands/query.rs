@@ -1,20 +1,16 @@
-use crate::data::{create_client, ConnectionArgs, MssqlClient, QuerySource};
+use crate::data::{ConnectionArgs, QuerySource};
 use async_std::task;
 use nu_plugin::PluginCommand;
 use nu_protocol::{
-    IntoInterruptiblePipelineData, IntoSpanned, LabeledError, PipelineData, ShellError, Signals, Signature, Spanned, SyntaxShape, Type, Value
+    IntoInterruptiblePipelineData, IntoPipelineData, IntoSpanned, LabeledError, PipelineData,
+    Signals, Signature, Spanned, SyntaxShape, Type, Value,
 };
 
-use crate::{
-    data::TableIterator,
-    MssqlPlugin, DEFAULT_BUFFER_SIZE,
-};
-
-use super::handle_err;
+use crate::{data::TableIterator, MssqlPlugin, DEFAULT_BUFFER_SIZE};
 
 pub struct Query;
 
-impl PluginCommand for Query {
+impl<'a> PluginCommand for Query {
     type Plugin = MssqlPlugin;
 
     fn name(&self) -> &str {
@@ -78,63 +74,55 @@ impl PluginCommand for Query {
                 ),
                 Some('b'),
             )
-            .input_output_type(
-                Type::Custom("MssqlClient".into()),
-                Type::table(),
-            )
+            .input_output_type(Type::Custom("MssqlClient".into()), Type::table())
             .switch("trust-cert", "Trust the server certificate", Some('t'))
             .category(nu_protocol::Category::Database)
     }
 
     fn run(
         &self,
-        _plugin: &Self::Plugin,
-        _engine: &nu_plugin::EngineInterface,
+        plugin: &Self::Plugin,
+        engine: &nu_plugin::EngineInterface,
         call: &nu_plugin::EvaluatedCall,
         input: PipelineData,
     ) -> Result<PipelineData, nu_protocol::LabeledError> {
         let args = ConnectionArgs::from_call(call)?;
         let query = QuerySource::from_call(call)?;
-        let call_head = call.head;
         let query = get_query(&query)?;
+        let (sender, receiver) = async_std::channel::bounded(args.as_ref().buffer_size);
 
-        let (sender, receiver) = async_std::channel::bounded(args.buffer_size);
-        task::spawn(async move {
-            let client = match try_get_client(input) {
-                Some(client) => client,
-                _ => match create_client(&args).await {
-                    Ok(client) => {
-                        MssqlClient::new(args.clone(), client)
-                    },
-                    Err(e) => {
-                        let err=  handle_err(e, &args);
-                        let err = ShellError::LabeledError(Box::new(err));
-                        let value = Value::error(err, call_head);
-                        _ = sender.send(value).await;
-                        return;
-                    }
+        let connection = task::block_on(async {
+            match plugin.connection_pool.get(&args, true) {
+                Ok(Some(connection)) => {
+                    eprintln!("Connection pool returned existing connection");
+                    Ok(connection)
                 }
-            };
-
-            client.run_query(query, sender).await;
+                Ok(None) => match plugin.connection_pool.create_connection(engine, args).await {
+                    Ok(connection) => {
+                        eprintln!("Connection pool created new connection");
+                        Ok(connection)
+                    }
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            }
         });
+
+        match connection {
+            Ok(connection) => {
+                task::spawn(async move {
+                    _ = &connection.run_query(query, sender).await;
+                });
+            }
+            Err(e) => {
+                let value = Value::error(e, call.head);
+                return Ok(value.into_pipeline_data_with_metadata(input.metadata()));
+            }
+        }
 
         let iterator = TableIterator::new(receiver);
         Ok(iterator.into_pipeline_data(call.head, Signals::empty()))
     }
-}
-
-fn try_get_client(input: PipelineData) -> Option<MssqlClient> {
-    match input {
-        PipelineData::Value(value, _) => match value {
-            Value::Custom { val , ..} => match val.as_any().downcast_ref::<MssqlClient>() {
-                Some(client) => Some(client.clone()),
-                None => None,
-            },
-            _ => None,
-        },
-        _ => None,
-    } 
 }
 
 fn get_query(query: &QuerySource) -> Result<Spanned<String>, LabeledError> {
@@ -146,7 +134,7 @@ fn get_query(query: &QuerySource) -> Result<Spanned<String>, LabeledError> {
                 "Error reading file {}: {}",
                 file, e
             ))),
-        }
+        },
     }
 }
 
@@ -154,7 +142,7 @@ fn get_query(query: &QuerySource) -> Result<Spanned<String>, LabeledError> {
 fn test_basic_connection() -> Result<(), nu_protocol::ShellError> {
     use nu_plugin_test_support::PluginTest;
     use nu_protocol::Span;
-    let mut plugin_test = PluginTest::new("mssql", MssqlPlugin.into())?;
+    let mut plugin_test = PluginTest::new("mssql", MssqlPlugin::new().into())?;
 
     // Now lets add a positional argument
     let output = plugin_test
